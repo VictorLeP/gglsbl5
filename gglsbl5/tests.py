@@ -1,6 +1,6 @@
 import unittest
 
-from gglsbl.protocol import URL
+from gglsbl5.protocol import URL
 
 class SafeBrowsingListTestCase(unittest.TestCase):
     def setUp(self):

@@ -12,10 +12,10 @@ import argparse
 import sys
 import time
 
-from gglsbl import SafeBrowsingList
+from gglsbl5 import SafeBrowsingList
 
 import logging
-log = logging.getLogger('gglsbl')
+log = logging.getLogger('gglsbl5')
 log.setLevel(logging.DEBUG)
 
 
@@ -26,7 +26,7 @@ def setupArgsParser():
                         required=True,
                         help='Safe Browsing API key [REQUIRED]')
     parser.add_argument('--db-path',
-                        default='/tmp/gsb_v4.db',
+                        default='/tmp/gsb_v5.db',
                         help='Path to SQLite DB')
     parser.add_argument('--log',
                         default=None,
@@ -59,7 +59,7 @@ def setupLogger(log_file, debug):
     lh = log_file is None and logging.StreamHandler() or logging.FileHandler(log_file)
     lh.setLevel(debug and logging.DEBUG or logging.INFO)
     lh.setFormatter(formatter)
-    log = logging.getLogger('gglsbl')
+    log = logging.getLogger('gglsbl5')
     log.addHandler(lh)
 
 

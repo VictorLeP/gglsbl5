@@ -6,10 +6,10 @@ import contextlib
 import sqlite3
 import logging
 
-from gglsbl.utils import to_hex
+from gglsbl5.utils import to_hex
 
 
-log = logging.getLogger('gglsbl')
+log = logging.getLogger('gglsbl5')
 log.addHandler(logging.NullHandler())
 
 
@@ -28,6 +28,26 @@ class ThreatList(object):
 
     def as_tuple(self):
         return (self.threat_type, self.platform_type, self.threat_entry_type)
+
+    def __repr__(self):
+        """String representation of object"""
+        return '/'.join(self.as_tuple())
+
+
+class HashList(object):
+    """Represents hasg list name."""
+
+    def __init__(self, name, metadata):
+        """Constructor."""
+        self.name = name
+        self.metadata = metadata
+
+    @classmethod
+    def from_api_entry(cls, entry):
+        return cls(entry['name'], entry['metadata'])
+
+    def as_tuple(self):
+        return (self.name)
 
     def __repr__(self):
         """String representation of object"""
@@ -225,7 +245,7 @@ class SqliteStorage(object):
         q = '''DELETE FROM hash_prefix
                     WHERE threat_type=? AND platform_type=? AND threat_entry_type=?
         '''
-        parameters = [threat_list.threat_type, threat_list.platform_type, threat_list.threat_entry_type]
+        parameters = [threat_list.name, threat_list.platform_type, threat_list.threat_entry_type]
         with self.get_cursor() as dbc:
             dbc.execute(q, parameters)
 

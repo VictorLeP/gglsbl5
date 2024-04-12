@@ -4,12 +4,11 @@ from base64 import b64decode
 
 import logging
 
-from gglsbl.utils import to_hex
-from gglsbl.protocol import SafeBrowsingApiClient, URL
-from gglsbl.storage import SqliteStorage, ThreatList, HashPrefixList
+from gglsbl5.utils import to_hex
+from gglsbl5.protocol import SafeBrowsingApiClient, URL
+from gglsbl5.storage import SqliteStorage, ThreatList, HashPrefixList, HashList
 
-
-log = logging.getLogger('gglsbl')
+log = logging.getLogger('gglsbl5')
 log.addHandler(logging.NullHandler())
 
 
@@ -17,10 +16,10 @@ class SafeBrowsingList(object):
     """Interface for Google Safe Browsing API
 
     supporting partial update of the local cache.
-    https://developers.google.com/safe-browsing/v4/
+    https://developers.google.com/safe-browsing/v5/
     """
 
-    def __init__(self, api_key, db_path='/tmp/gsb_v4.db',
+    def __init__(self, api_key, db_path='/tmp/gsb_v5.db',
                  discard_fair_use_policy=False, platforms=None, timeout=10):
         """Constructor.
 
@@ -28,19 +27,25 @@ class SafeBrowsingList(object):
             api_key: string, a key for API authentication.
             db_path: string, path to SQLite DB file to store cached data.
             discard_fair_use_policy: boolean, disable request frequency throttling (only for testing).
-            platforms: list, threat lists to look up, default includes all platforms.
+            platforms: list, threat lists to look up, default includes all platforms.  TODO update for v5
             timeout: seconds to wait for Sqlite DB to become unlocked from concurrent WRITE transaction.
         """
         self.api_client = SafeBrowsingApiClient(api_key, discard_fair_use_policy=discard_fair_use_policy)
         self.storage = SqliteStorage(db_path, timeout=timeout)
-        self.platforms = platforms
+        self.platforms = platforms  # TODO
 
     def _verify_threat_list_checksum(self, threat_list, remote_checksum):
+        """Verify checksum of the threat list.
+
+        TODO update for v5
+        """
         local_checksum = self.storage.hash_prefix_list_checksum(threat_list)
         return remote_checksum == local_checksum
 
     def update_hash_prefix_cache(self):
-        """Update locally cached threat lists."""
+        """Update locally cached threat lists.
+
+        TODO update for v5"""
         try:
             self.storage.cleanup_full_hashes()
             self.storage.commit()
@@ -52,6 +57,9 @@ class SafeBrowsingList(object):
             raise
 
     def _sync_threat_lists(self):
+        """Sync threat lists.
+
+        TODO update for v5"""
         threat_lists_to_remove = dict()
         for ts in self.storage.get_threat_lists():
             threat_lists_to_remove[repr(ts)] = ts
@@ -72,50 +80,47 @@ class SafeBrowsingList(object):
     def _sync_hash_prefix_cache(self):
         client_state = self.storage.get_client_state()
         for response in self.api_client.get_threats_update(client_state):
-            response_threat_list = ThreatList(response['threatType'], response['platformType'],
-                                              response['threatEntryType'])
-            if response['responseType'] == 'FULL_UPDATE':
-                self.storage.delete_hash_prefix_list(response_threat_list)
-            for r in response.get('removals', []):
-                self.storage.remove_hash_prefix_indices(response_threat_list, r['rawIndices']['indices'])
-            for a in response.get('additions', []):
-                hash_prefix_list = HashPrefixList(a['rawHashes']['prefixSize'], b64decode(a['rawHashes']['rawHashes']))
-                self.storage.populate_hash_prefix_list(response_threat_list, hash_prefix_list)
-            expected_checksum = b64decode(response['checksum']['sha256'])
+            response_threat_list = HashList(response['name'], response['metadata'])
+            if response['partialUpdate'] is False:
+                self.storage.delete_hash_prefix_list(response_threat_list)  # TODO
+            for r in response.get('compressedRemovals', []):
+                self.storage.remove_hash_prefix_indices(response_threat_list, r)  # TODO
+            for a in response.get('compressed_additions', []):
+                hash_prefix_list = HashPrefixList(a)  # TODO
+                # TODO Rice decoding algorithm
+                self.storage.populate_hash_prefix_list(response_threat_list, hash_prefix_list)  # TODO
+            expected_checksum = b64decode(response['checksum'])
             log.info('Verifying threat hash prefix list checksum')
-            if self._verify_threat_list_checksum(response_threat_list, expected_checksum):
+            if self._verify_threat_list_checksum(response_threat_list, expected_checksum):  # TODO
                 log.info('Local cache checksum matches the server: {}'.format(to_hex(expected_checksum)))
-                self.storage.update_threat_list_client_state(response_threat_list, response['newClientState'])
+                self.storage.update_threat_list_client_state(response_threat_list, response['version'])  # TODO
                 self.storage.commit()
             else:
                 raise Exception('Local cache checksum does not match the server: '
                                 '"{}". Consider removing {}'.format(to_hex(expected_checksum), self.storage.db_path))
+            minimum_wait_duration = response.get('minimumWaitDuration')  # TODO
+            # TODO minimumWaitDuration
 
     def _sync_full_hashes(self, hash_prefixes):
         """Download full hashes matching hash_prefixes.
 
         Also update cache expiration timestamps.
         """
-        client_state = self.storage.get_client_state()
-        fh_response = self.api_client.get_full_hashes(hash_prefixes, client_state)
+        fh_response = self.api_client.get_full_hashes(hash_prefixes)
+        cache_duration = int(fh_response['cacheDuration'].rstrip('s'))
 
         # update negative cache for each hash prefix
         # store full hash (insert or update) with positive cache bumped up
-        for m in fh_response.get('matches', []):
-            threat_list = ThreatList(m['threatType'], m['platformType'], m['threatEntryType'])
-            hash_value = b64decode(m['threat']['hash'])
-            cache_duration = int(m['cacheDuration'].rstrip('s'))
-            malware_threat_type = None
-            for metadata in m['threatEntryMetadata'].get('entries', []):
-                k = b64decode(metadata['key'])
-                v = b64decode(metadata['value'])
-                if k == 'malware_threat_type':
-                    malware_threat_type = v
-            self.storage.store_full_hash(threat_list, hash_value, cache_duration, malware_threat_type)
+        for m in fh_response.get('fullHashes', []):
+            hash_value = b64decode(m['fullHash'])
+            full_hash_details = m['fullHashDetails']
+            for d in full_hash_details:
+                threat_list = ThreatList(d['threatType'])
+                attributes = d.get('attributes', [])
+                self.storage.store_full_hash(threat_list, hash_value, cache_duration, attributes)
 
-        negative_cache_duration = int(fh_response['negativeCacheDuration'].rstrip('s'))
         for prefix_value in hash_prefixes:
-            self.storage.update_hash_prefix_expiration(prefix_value, negative_cache_duration)
+            self.storage.update_hash_prefix_expiration(prefix_value, cache_duration)
 
     def lookup_url(self, url):
         """Look up specified URL in Safe Browsing threat lists."""

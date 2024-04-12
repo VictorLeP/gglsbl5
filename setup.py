@@ -3,10 +3,10 @@
 from setuptools import setup
 import versioneer
 
-setup(name='gglsbl',
+setup(name='gglsbl5',
     version=versioneer.get_version(),
     cmdclass=versioneer.get_cmdclass(),
-    description="Client library for Google Safe Browsing Update API v4",
+    description="Client library for Google Safe Browsing Update API v5",
     classifiers=[
         "Operating System :: POSIX",
         "Environment :: Console",
@@ -18,11 +18,11 @@ setup(name='gglsbl',
         "Topic :: Software Development :: Libraries :: Python Modules",
     ],
     keywords='google safe browsing api client',
-    author='Aleh Filipovich',
-    author_email='aleh@vaolix.com',
-    url='https://github.com/afilipovich/gglsbl',
+    author='Victor Le Pochat',
+    author_email='victor.lepochat@kuleuven.be',
+    url='https://github.com/VictorLeP/gglsbl5',
     license='Apache2',
-    packages=['gglsbl'],
-    install_requires=['google-api-python-client>=1.4.2,<2'],
-    scripts=['bin/gglsbl_client.py'],
+    packages=['gglsbl5'],
+    install_requires=['google-api-python-client>=2'],
+    scripts=['bin/gglsbl5_client.py'],
 )

@@ -1,14 +1,9 @@
 #!/usr/bin/env python
-
+import os
 import sys
 from functools import wraps
 
-try:
-    import urllib
-    import urlparse
-except ImportError:
-    import urllib.parse as urllib
-    from urllib import parse as urlparse
+import urllib.parse
 
 import struct
 import time
@@ -19,21 +14,18 @@ import socket
 import random
 from base64 import b64encode
 
-try:
-    from googleapiclient.discovery import build
-    from googleapiclient.errors import HttpError
-except ImportError:
-    from apiclient.discovery import build
-    from apiclient.errors import HttpError
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from googleapiclient.http import build_http, set_user_agent
 
 import logging
-from ._version import get_versions
+from gglsbl5._version import get_versions
 
 
 __version__ = get_versions()['version']
 del get_versions
 
-log = logging.getLogger('gglsbl')
+log = logging.getLogger('gglsbl5')
 log.addHandler(logging.NullHandler())
 
 
@@ -66,23 +58,40 @@ def autoretry(func):
 
 
 class SafeBrowsingApiClient(object):
-    def __init__(self, developer_key, client_id='python-gglsbl',
+    def __init__(self, developer_key, client_id='python-gglsbl5',
                  client_version=__version__, discard_fair_use_policy=True):
         """Constructor.
 
         :param developer_key: Google API key
         :param discard_fair_use_policy: do not wait between individual API calls as requested by the spec
+
+        FIXME updated for v5
         """
-        self.client_id = client_id
-        self.client_version = client_version
+        # self.client_id = client_id
+        # self.client_version = client_version
+
         self.discard_fair_use_policy = discard_fair_use_policy
         if self.discard_fair_use_policy:
-            log.warn('Circumventing request frequency throttling is against Safe Browsing API policy.')
-        self.service = build('safebrowsing', 'v4', developerKey=developer_key, cache_discovery=False)
+            log.warning('Circumventing request frequency throttling is against Safe Browsing API policy.')
+
+        # Inspired by https://github.com/GoogleCloudPlatform/django-cloud-deploy/pull/398
+        http_with_user_agent = build_http()
+        user_agent = '/'.join([client_id, client_version])
+        set_user_agent(http_with_user_agent, user_agent)
+
+        self.service = build('safebrowsing', 'v5alpha1',
+                             http=http_with_user_agent,
+                             developerKey=developer_key, cache_discovery=False,
+                             static_discovery=False  # static docs are outdated
+                             )
         self.next_threats_update_req_no_sooner_than = None
         self.next_full_hashes_req_no_sooner_than = None
 
     def get_wait_duration(self, response):
+        """Extract minimum wait duration from the response.
+
+        FIXME updated for v5
+        """
         if self.discard_fair_use_policy:
             return None
         minimum_wait_duration = response.get('minimumWaitDuration')
@@ -92,6 +101,10 @@ class SafeBrowsingApiClient(object):
 
     @staticmethod
     def fair_use_delay(next_request_no_sooner_than):
+        """Wait until the next request is allowed.
+
+        FIXME updated for v5
+        """
         if next_request_no_sooner_than is not None:
             sleep_for = max(0, next_request_no_sooner_than - time.time())
             log.info('Sleeping for {} seconds until next request.'.format(sleep_for))
@@ -99,79 +112,65 @@ class SafeBrowsingApiClient(object):
 
     @autoretry
     def get_threats_lists(self):
-        """Retrieve all available threat lists"""
-        response = self.service.threatLists().list().execute()
-        return response['threatLists']
+        """Retrieve all available hash lists"""
+        hashLists = []
+        print(self.service.__dict__)
+        response = self.service.hashLists().list().execute()
+        hashLists += response['hashLists']
+        while "nextPageToken" in response:
+            response = self.service.hashLists().list(pageToken=response["nextPageToken"]).execute()
+            hashLists += response['hashLists']
+        return hashLists
 
     def get_threats_update(self, client_state):
         """Fetch hash prefixes update for given threat list.
 
-        client_state is a dict which looks like {(threatType, platformType, threatEntryType): clientState}
+        client_state is a dict --
+
+        FIXME updated for v5
         """
-        request_body = {
-            "client": {
-                "clientId": self.client_id,
-                "clientVersion": self.client_version,
-            },
-            "listUpdateRequests": [],
+        lists = ["mw", "se", "pha", "uws", "uwsa", "gc"]
+        v4_v5_list_mapping = {
+            "MALWARE": "mw",
+            "SOCIAL_ENGINEERING": "se",
+            "POTENTIALLY_HARMFUL_APPLICATION": "pha",
+            "UNWANTED_SOFTWARE": "uws",
         }
-        for (threat_type, platform_type, threat_entry_type), current_state in client_state.items():
-            request_body['listUpdateRequests'].append(
-                {
-                    "threatType": threat_type,
-                    "platformType": platform_type,
-                    "threatEntryType": threat_entry_type,
-                    "state": current_state,
-                    "constraints": {
-                        "supportedCompressions": ["RAW"]
-                    }
-                }
-            )
+        names = []
+        versions = []
+        for list in lists:
+            names.append(list)
+            if list in client_state:
+                versions.append(client_state[list])
+            elif v4_v5_list_mapping.get(list) in client_state:
+                versions.append(client_state[v4_v5_list_mapping[list]])
         self.fair_use_delay(self.next_threats_update_req_no_sooner_than)
 
         @autoretry
         def _get_threats_update():
-            nonlocal self, request_body
-            res = self.service.threatListUpdates().fetch(body=request_body).execute()
+            nonlocal self, names, versions
+            res = self.service.hashLists().batchGet(names=names, versions=versions).execute()
             self.next_threats_update_req_no_sooner_than = self.get_wait_duration(res)
-            return res['listUpdateResponses']
+            return res['hashLists']
 
         return _get_threats_update()
 
-    def get_full_hashes(self, prefixes, client_state):
+    def get_full_hashes(self, prefixes):
         """Find full hashes matching hash prefixes.
 
         client_state is a dict which looks like {(threatType, platformType, threatEntryType): clientState}
+
+        FIXME updated for v5
         """
-        request_body = {
-            "client": {
-                "clientId": self.client_id,
-                "clientVersion": self.client_version,
-            },
-            "clientStates": [],
-            "threatInfo": {
-                "threatTypes": [],
-                "platformTypes": [],
-                "threatEntryTypes": [],
-                "threatEntries": [],
-            }
-        }
+        hashPrefixes = []
         for prefix in prefixes:
-            request_body['threatInfo']['threatEntries'].append({"hash": b64encode(prefix).decode()})
-        for ((threatType, platformType, threatEntryType), clientState) in client_state.items():
-            request_body['clientStates'].append(clientState)
-            if threatType not in request_body['threatInfo']['threatTypes']:
-                request_body['threatInfo']['threatTypes'].append(threatType)
-            if platformType not in request_body['threatInfo']['platformTypes']:
-                request_body['threatInfo']['platformTypes'].append(platformType)
-            if threatEntryType not in request_body['threatInfo']['threatEntryTypes']:
-                request_body['threatInfo']['threatEntryTypes'].append(threatEntryType)
+            hashPrefixes.append(b64encode(prefix).decode())
         self.fair_use_delay(self.next_full_hashes_req_no_sooner_than)
 
         @autoretry
         def _get_full_hashes():
-            nonlocal self, request_body
-            res = self.service.fullHashes().find(body=request_body).execute()
+            nonlocal self, hashPrefixes
+            res = self.service.hashes().search(hashPrefixes=hashPrefixes).execute()
             self.next_full_hashes_req_no_sooner_than = self.get_wait_duration(res)
             return res
 
@@ -207,14 +206,14 @@ class URL(object):
     def canonical(self):
         """Convert URL to its canonical form."""
         def full_unescape(u):
-            uu = urllib.unquote(u)
+            uu = urllib.parse.unquote(u)
             if uu == u:
                 return uu
             else:
                 return full_unescape(uu)
 
         def full_unescape_to_bytes(u):
-            uu = urlparse.unquote_to_bytes(u)
+            uu = urllib.parse.unquote_to_bytes(u)
             if uu == u:
                 return uu
             else:
@@ -222,7 +221,7 @@ class URL(object):
 
         def quote(s):
             safe_chars = '!"$&\'()*+,-./:;<=>?@[\\]^_`{|}~'
-            return urllib.quote(s, safe=safe_chars)
+            return urllib.parse.quote(s, safe=safe_chars)
 
         url = self.url.strip()
         url = url.replace(b'\n', b'').replace(b'\r', b'').replace(b'\t', b'')
@@ -237,10 +236,10 @@ class URL(object):
             url = quote(full_unescape_to_bytes(url))
         else:
             url = quote(full_unescape(url))
-        url_parts = urlparse.urlsplit(url)
+        url_parts = urllib.parse.urlsplit(url)
         if not url_parts[0]:
             url = 'http://{}'.format(url)
-            url_parts = urlparse.urlsplit(url)
+            url_parts = urllib.parse.urlsplit(url)
         protocol = url_parts.scheme
         if self.__py3:
             host = full_unescape_to_bytes(url_parts.hostname)
@@ -309,14 +308,22 @@ class URL(object):
                 curr_path = curr_path + path_parts[i] + '/'
                 yield curr_path
 
-        protocol, address_str = urllib.splittype(url)
-        host, path = urllib.splithost(address_str)
-        user, host = urllib.splituser(host)
-        host, port = urllib.splitport(host)
+        parsed_url = urllib.parse.urlparse(url)
+
+        full_path = parsed_url.path
+        if parsed_url.params:
+            full_path += ';' + parsed_url.params
+        if parsed_url.query:
+            full_path += '?' + parsed_url.query
+        if parsed_url.fragment:
+            full_path += '#' + parsed_url.fragment
+
+        host = parsed_url.hostname
         host = host.strip('/')
+
         seen_permutations = set()
         for h in url_host_permutations(host):
-            for p in url_path_permutations(path):
+            for p in url_path_permutations(full_path):
                 u = '{}{}'.format(h, p)
                 if u not in seen_permutations:
                     yield u
@@ -330,6 +337,6 @@ class URL(object):
 
 if __name__ == '__main__':
     from pprint import pprint
-    c = SafeBrowsingApiClient('AIzaSyATpqLltciaMve61Wywb5yNDA8D8BvXEn4')
+    c = SafeBrowsingApiClient(os.environ['API_KEY'])
     r = c.get_threats_lists()
     pprint(r)
